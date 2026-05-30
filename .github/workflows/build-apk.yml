@@ -27,7 +27,7 @@ jobs:
 
       - name: Build Vue frontend
         working-directory: openclaw-android
-        run: npm run build:frontend
+        run: npx vite build
 
       - name: Build CLI server
         working-directory: openclaw-android

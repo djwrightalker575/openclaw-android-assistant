@@ -31,7 +31,7 @@ fi
 
 # Build frontend (Vue) and CLI (Express server)
 echo "Building frontend..."
-npm run build:frontend
+npx vite build
 
 echo "Building CLI server..."
 npm run build:cli
