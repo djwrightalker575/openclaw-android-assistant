@@ -65,12 +65,7 @@ jobs:
         if: github.ref_type == 'branch'
         id: changelog
         run: |
-          PREV_TAG=$(git tag --sort=-v:refname | head -1)
-          if [ -n "$PREV_TAG" ]; then
-            CHANGES=$(git log "$PREV_TAG"..HEAD --pretty=format:"- %s" --reverse)
-          else
-            CHANGES=$(git log --pretty=format:"- %s" --reverse -20)
-          fi
+          CHANGES=$(git log --pretty=format:"- %s" --reverse -20)
           {
             echo "notes<<CHANGELOG_EOF"
             echo "$CHANGES"
