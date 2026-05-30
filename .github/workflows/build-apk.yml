@@ -20,15 +20,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "21"
-          cache: "npm"
 
       - name: Install npm dependencies
+        working-directory: openclaw-android
         run: npm ci --ignore-scripts || npm install
 
       - name: Build Vue frontend
+        working-directory: openclaw-android
         run: npm run build:frontend
 
       - name: Build CLI server
+        working-directory: openclaw-android
         run: npm run build:cli
 
       - name: Bundle server into APK assets

@@ -14,7 +14,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ANDROID_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT_ROOT="$(dirname "$ANDROID_DIR")"
+REPO_ROOT="$(dirname "$ANDROID_DIR")"
+PROJECT_ROOT="$REPO_ROOT/openclaw-android"
 
 ASSETS_DIR="$ANDROID_DIR/app/src/main/assets/server-bundle"
 
