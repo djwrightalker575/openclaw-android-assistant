@@ -6,6 +6,8 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 
 /**
@@ -827,6 +829,11 @@ H3
      * device can connect without "device token mismatch" errors.
      */
     fun startOpenClawGateway(): Boolean {
+        if (isPortOpen(OPENCLAW_GATEWAY_PORT)) {
+            Log.i(TAG, "OpenClaw gateway already listening on port $OPENCLAW_GATEWAY_PORT")
+            return true
+        }
+
         if (openClawGatewayProcess != null) {
             try {
                 openClawGatewayProcess!!.exitValue()
@@ -897,6 +904,11 @@ H3
      * the installed openclaw npm package at dist/control-ui/.
      */
     fun startOpenClawControlUiServer(): Boolean {
+        if (isPortOpen(OPENCLAW_CONTROL_UI_PORT)) {
+            Log.i(TAG, "OpenClaw Control UI already listening on port $OPENCLAW_CONTROL_UI_PORT")
+            return true
+        }
+
         if (openClawControlUiProcess != null) {
             try {
                 openClawControlUiProcess!!.exitValue()
@@ -1095,7 +1107,20 @@ WEOF
      * resolver; the proxy forwards TCP connections transparently.
      */
     fun startProxy(): Boolean {
-        if (proxyProcess != null) return true
+        if (isPortOpen(PROXY_PORT)) {
+            Log.i(TAG, "CONNECT proxy already listening on port $PROXY_PORT")
+            return true
+        }
+
+        if (proxyProcess != null) {
+            try {
+                proxyProcess!!.exitValue()
+                proxyProcess = null
+            } catch (_: IllegalThreadStateException) {
+                Log.i(TAG, "CONNECT proxy process exists but port is not reachable yet")
+                return true
+            }
+        }
 
         val paths = BootstrapInstaller.getPaths(context)
         val proxyScript = File(paths.homeDir, "proxy.js")
@@ -1306,9 +1331,14 @@ WEOF
      * and authentication must have been completed first.
      */
     fun startServer(): Boolean {
-        if (isRunning) {
-            Log.i(TAG, "Server already running")
+        if (isServerResponsive()) {
+            Log.i(TAG, "Server already responsive on port $SERVER_PORT")
             return true
+        }
+
+        if (isRunning) {
+            Log.w(TAG, "Server process is alive but HTTP health check failed; restarting it")
+            stopServer()
         }
 
         val paths = BootstrapInstaller.getPaths(context)
@@ -1375,6 +1405,67 @@ WEOF
         return false
     }
 
+    fun isServerResponsive(timeoutMs: Int = 1500): Boolean {
+        return try {
+            val conn = URL("http://127.0.0.1:$SERVER_PORT/").openConnection() as HttpURLConnection
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
+            conn.requestMethod = "GET"
+            val code = conn.responseCode
+            conn.disconnect()
+            code in 200..399
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isReadyForBackgroundStart(): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        val serverScript = File(paths.prefixDir, "lib/node_modules/codex-web-local/dist-cli/index.js")
+        val authFile = File(paths.homeDir, ".codex/auth.json")
+        return BootstrapInstaller.isBootstrapInstalled(context) &&
+            isNodeInstalled() &&
+            isCodexInstalled() &&
+            isPlatformBinaryInstalled() &&
+            serverScript.exists() &&
+            authFile.exists()
+    }
+
+    fun ensureRuntimeServices(onProgress: ((String) -> Unit)? = null): Boolean {
+        if (!isReadyForBackgroundStart()) {
+            onProgress?.invoke("Runtime not ready for background startup")
+            return false
+        }
+
+        ensureBionicCompat()
+        ensureCodexWrapperScript()
+        ensureFullAccessConfig()
+        ensureDefaultWorkspace()
+
+        onProgress?.invoke("Starting CONNECT proxy")
+        if (!startProxy()) {
+            return false
+        }
+
+        if (isOpenClawInstalled()) {
+            onProgress?.invoke("Configuring OpenClaw")
+            configureOpenClawAuth()
+
+            onProgress?.invoke("Starting OpenClaw gateway")
+            startOpenClawGateway()
+
+            onProgress?.invoke("Starting OpenClaw Control UI")
+            startOpenClawControlUiServer()
+        }
+
+        onProgress?.invoke("Starting Codex server")
+        if (!startServer()) {
+            return false
+        }
+
+        return waitForServer(timeoutMs = 90_000)
+    }
+
     fun stopServer() {
         val proc = serverProcess ?: return
         serverProcess = null
@@ -1401,6 +1492,17 @@ WEOF
         openClawGatewayProcess = null
         openClawControlUiProcess?.destroy()
         openClawControlUiProcess = null
+    }
+
+    private fun isPortOpen(port: Int, timeoutMs: Int = 1000): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

@@ -51,8 +51,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        serverManager.stopServer()
-        stopService(Intent(this, CodexForegroundService::class.java))
+        // The foreground service owns the long-lived server stack. Do not stop it
+        // when the UI activity is destroyed or Android may tear down Codex as soon
+        // as the user switches apps, closes the task, or the WebView is recreated.
     }
 
     private fun requestBatteryOptimizationExemption() {
@@ -72,7 +73,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startForegroundService() {
-        val intent = Intent(this, CodexForegroundService::class.java)
+        val intent = Intent(this, CodexForegroundService::class.java).apply {
+            action = CodexForegroundService.ACTION_ENSURE_SERVER
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
