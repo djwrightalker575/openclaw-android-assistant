@@ -9,6 +9,13 @@ on:
       - 'android/wirebridge/**'
       - 'android/settings.gradle.kts'
       - '.github/workflows/build-wire-android-bridge.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'android/wirebridge/**'
+      - 'android/settings.gradle.kts'
+      - '.github/workflows/build-wire-android-bridge.yml'
 
 permissions:
   contents: read
