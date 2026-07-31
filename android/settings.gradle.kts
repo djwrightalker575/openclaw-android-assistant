@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CodexMobile"
 include(":app")
+include(":wirebridge")
