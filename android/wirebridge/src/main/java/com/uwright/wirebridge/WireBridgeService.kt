@@ -8,11 +8,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.io.File
+import java.security.KeyStore
 import java.util.concurrent.Executors
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 class WireBridgeService : Service() {
     companion object {
@@ -68,7 +72,7 @@ class WireBridgeService : Service() {
                 val binary = File(root, "tunnel-client")
 
                 status.writeText(
-                    "WIRE Android Bridge v0.1.1\n" +
+                    "WIRE Android Bridge v0.1.2\n" +
                         "Launching tunnel client\n" +
                         "Tunnel: $tunnelId\n"
                 )
@@ -89,12 +93,22 @@ class WireBridgeService : Service() {
                     binary.setExecutable(true, true)
                 }
 
+                // The Linux ARM64 tunnel binary cannot reliably discover Android's
+                // platform certificate store. Export Android's trusted roots to a PEM
+                // bundle and pass it through tunnel-client's supported --ca-bundle flag.
+                val caBundle = exportAndroidTrustStore(root)
+                appendStatus(
+                    status,
+                    "Android CA roots exported: ${countPemCertificates(caBundle)}\n"
+                )
+
                 val healthUrl = File(root, "health.url")
                 val command = listOf(
                     binary.absolutePath,
                     "run",
                     "--embedded-mcp-stub",
                     "--control-plane.tunnel-id", tunnelId,
+                    "--ca-bundle", caBundle.absolutePath,
                     "--health.listen-addr", "127.0.0.1:8080",
                     "--health.url-file", healthUrl.absolutePath,
                 )
@@ -110,7 +124,7 @@ class WireBridgeService : Service() {
                 pb.environment()["no_proxy"] = "127.0.0.1,localhost,::1"
 
                 process = pb.start()
-                appendStatus(status, "Process started; waiting for readiness\n")
+                appendStatus(status, "Process started; waiting for control-plane connectivity\n")
 
                 process!!.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
@@ -131,6 +145,40 @@ class WireBridgeService : Service() {
             }
         }
     }
+
+    private fun exportAndroidTrustStore(root: File): File {
+        val trustManagerFactory = TrustManagerFactory.getInstance(
+            TrustManagerFactory.getDefaultAlgorithm()
+        )
+        trustManagerFactory.init(null as KeyStore?)
+
+        val trustManager = trustManagerFactory.trustManagers
+            .filterIsInstance<X509TrustManager>()
+            .firstOrNull()
+            ?: error("Android X509 trust manager unavailable")
+
+        val certificates = trustManager.acceptedIssuers
+            .distinctBy { it.encoded.contentHashCode() }
+        if (certificates.isEmpty()) {
+            error("Android trust store returned no CA certificates")
+        }
+
+        val bundle = File(root, "android-ca-bundle.pem")
+        bundle.bufferedWriter().use { writer ->
+            certificates.forEach { certificate ->
+                writer.appendLine("-----BEGIN CERTIFICATE-----")
+                val encoded = Base64.encodeToString(certificate.encoded, Base64.NO_WRAP)
+                encoded.chunked(64).forEach { line -> writer.appendLine(line) }
+                writer.appendLine("-----END CERTIFICATE-----")
+            }
+        }
+        return bundle
+    }
+
+    private fun countPemCertificates(bundle: File): Int =
+        bundle.useLines { lines ->
+            lines.count { it == "-----BEGIN CERTIFICATE-----" }
+        }
 
     private fun stopBridge() {
         process?.destroy()
