@@ -20,6 +20,7 @@ class WireBridgeService : Service() {
         const val ACTION_STOP = "wire.STOP"
         private const val CHANNEL = "wire_bridge"
         private const val NOTIFICATION_ID = 1941
+        private const val PROXY_PORT = 18924
 
         fun readStatus(context: Context): String {
             val f = File(context.filesDir, "wirebridge/status.txt")
@@ -28,7 +29,13 @@ class WireBridgeService : Service() {
     }
 
     private val executor = Executors.newSingleThreadExecutor()
-    @Volatile private var process: Process? = null
+    private val statusLock = Any()
+
+    @Volatile
+    private var process: Process? = null
+
+    @Volatile
+    private var connectProxy: AndroidConnectProxy? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -50,6 +57,7 @@ class WireBridgeService : Service() {
     private fun startBridge() {
         if (process?.isAlive == true) return
         startForeground(NOTIFICATION_ID, notification("Starting secure MCP tunnel"))
+
         executor.execute {
             val root = File(filesDir, "wirebridge").apply { mkdirs() }
             val status = File(root, "status.txt")
@@ -58,12 +66,29 @@ class WireBridgeService : Service() {
                 val tunnelId = prefs.getString("tunnel_id", null) ?: error("Tunnel ID missing")
                 val apiKey = prefs.getString("api_key", null) ?: error("Runtime API key missing")
                 val binary = File(root, "tunnel-client")
+
+                status.writeText(
+                    "WIRE Android Bridge v0.1.1\n" +
+                        "Launching tunnel client\n" +
+                        "Tunnel: $tunnelId\n"
+                )
+
+                val proxy = AndroidConnectProxy(PROXY_PORT) { line ->
+                    appendStatus(status, "[proxy] $line\n")
+                }
+                if (!proxy.start()) {
+                    error("Android CONNECT proxy failed to start")
+                }
+                connectProxy = proxy
+                appendStatus(status, "Native DNS bypass enabled through 127.0.0.1:$PROXY_PORT\n")
+
                 if (!binary.exists()) {
                     assets.open("tunnel-client-linux-arm64").use { input ->
                         binary.outputStream().use { output -> input.copyTo(output) }
                     }
                     binary.setExecutable(true, true)
                 }
+
                 val healthUrl = File(root, "health.url")
                 val command = listOf(
                     binary.absolutePath,
@@ -73,28 +98,35 @@ class WireBridgeService : Service() {
                     "--health.listen-addr", "127.0.0.1:8080",
                     "--health.url-file", healthUrl.absolutePath,
                 )
-                status.writeText("Launching tunnel client\nTunnel: $tunnelId\n")
+
                 val pb = ProcessBuilder(command)
                     .directory(root)
                     .redirectErrorStream(true)
+
                 pb.environment()["CONTROL_PLANE_API_KEY"] = apiKey
+                pb.environment()["HTTPS_PROXY"] = "http://127.0.0.1:$PROXY_PORT"
+                pb.environment()["https_proxy"] = "http://127.0.0.1:$PROXY_PORT"
+                pb.environment()["NO_PROXY"] = "127.0.0.1,localhost,::1"
+                pb.environment()["no_proxy"] = "127.0.0.1,localhost,::1"
+
                 process = pb.start()
-                status.appendText("Process started; waiting for readiness\n")
+                appendStatus(status, "Process started; waiting for readiness\n")
+
                 process!!.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
-                        status.appendText(line.take(2000) + "\n")
-                        if (status.length() > 250_000) {
-                            val tail = status.readText().takeLast(150_000)
-                            status.writeText(tail)
-                        }
+                        appendStatus(status, line.take(2000) + "\n")
+                        trimStatusIfNeeded(status)
                     }
                 }
+
                 val exit = process?.waitFor()
-                status.appendText("Tunnel client exited: $exit\n")
+                appendStatus(status, "Tunnel client exited: $exit\n")
             } catch (t: Throwable) {
-                status.appendText("FAILED: ${t::class.java.simpleName}: ${t.message}\n")
+                appendStatus(status, "FAILED: ${t::class.java.simpleName}: ${t.message}\n")
             } finally {
                 process = null
+                connectProxy?.stop()
+                connectProxy = null
                 stopForeground(STOP_FOREGROUND_DETACH)
             }
         }
@@ -103,12 +135,30 @@ class WireBridgeService : Service() {
     private fun stopBridge() {
         process?.destroy()
         process = null
+        connectProxy?.stop()
+        connectProxy = null
+
         File(filesDir, "wirebridge/status.txt").apply {
             parentFile?.mkdirs()
-            appendText("Bridge stopped by operator\n")
+            appendStatus(this, "Bridge stopped by operator\n")
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun appendStatus(status: File, text: String) {
+        synchronized(statusLock) {
+            status.appendText(text)
+        }
+    }
+
+    private fun trimStatusIfNeeded(status: File) {
+        synchronized(statusLock) {
+            if (status.length() > 250_000) {
+                val tail = status.readText().takeLast(150_000)
+                status.writeText(tail)
+            }
+        }
     }
 
     private fun notification(text: String): Notification = NotificationCompat.Builder(this, CHANNEL)
